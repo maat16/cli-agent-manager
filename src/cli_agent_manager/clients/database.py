@@ -133,6 +133,23 @@ def list_terminals_by_session(tmux_session: str) -> List[Dict[str, Any]]:
         ]
 
 
+def list_all_terminals() -> List[Dict[str, Any]]:
+    """List all terminals across all sessions."""
+    with SessionLocal() as db:
+        terminals = db.query(TerminalModel).all()
+        return [
+            {
+                "id": t.id,
+                "tmux_session": t.tmux_session,
+                "tmux_window": t.tmux_window,
+                "provider": t.provider,
+                "agent_profile": t.agent_profile,
+                "last_active": t.last_active,
+            }
+            for t in terminals
+        ]
+
+
 def update_last_active(terminal_id: str) -> bool:
     """Update last active timestamp."""
     with SessionLocal() as db:
@@ -195,6 +212,50 @@ def get_pending_messages(receiver_id: str, limit: int = 1) -> List[InboxMessage]
             .limit(limit)
             .all()
         )
+        return [
+            InboxMessage(
+                id=msg.id,
+                sender_id=msg.sender_id,
+                receiver_id=msg.receiver_id,
+                message=msg.message,
+                status=MessageStatus(msg.status),
+                created_at=msg.created_at,
+            )
+            for msg in messages
+        ]
+
+
+def get_inbox_messages(
+    receiver_id: str, 
+    status: Optional[MessageStatus] = None, 
+    limit: int = 10
+) -> List[InboxMessage]:
+    """Get inbox messages with optional status filter and pagination.
+    
+    Args:
+        receiver_id: Terminal ID to get messages for
+        status: Optional status filter (pending, delivered, failed)
+        limit: Maximum number of messages to return (default 10, max 100)
+        
+    Returns:
+        List of inbox messages ordered by created_at DESC (newest first)
+    """
+    # Enforce limit bounds
+    limit = min(max(1, limit), 100)
+    
+    with SessionLocal() as db:
+        query = (
+            db.query(InboxModel)
+            .filter(InboxModel.receiver_id == receiver_id)
+            .order_by(InboxModel.created_at.desc())
+        )
+        
+        # Apply status filter if provided
+        if status is not None:
+            query = query.filter(InboxModel.status == status.value)
+            
+        messages = query.limit(limit).all()
+        
         return [
             InboxMessage(
                 id=msg.id,

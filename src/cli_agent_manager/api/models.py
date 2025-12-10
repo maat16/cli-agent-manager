@@ -1,6 +1,6 @@
 """REST API models for agent communication endpoints."""
 
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 from pydantic import BaseModel, Field, StringConstraints
 
@@ -55,6 +55,7 @@ class SendMessageRequest(BaseModel):
 
     receiver_id: TerminalId = Field(description="Target terminal ID to send message to")
     message: str = Field(description="Message content to send", min_length=1)
+    sender_id: Optional[TerminalId] = Field(None, description="Optional sender terminal ID (auto-detected if not provided)")
 
 
 # Response Models
@@ -84,3 +85,22 @@ class SendMessageResponse(BaseModel):
     receiver_id: Optional[TerminalId] = Field(None, description="The receiver terminal ID")
     created_at: Optional[str] = Field(None, description="Message creation timestamp")
     error: Optional[str] = Field(None, description="Error message if operation failed")
+
+
+class InboxMessageResponse(BaseModel):
+    """Response model for inbox message."""
+
+    id: int = Field(description="Message ID")
+    sender_id: str = Field(description="Sender terminal ID")
+    receiver_id: str = Field(description="Receiver terminal ID")
+    message: str = Field(description="Message content")
+    status: str = Field(description="Message status (pending, delivered, failed)")
+    created_at: str = Field(description="Creation timestamp (ISO format)")
+
+
+class InboxMessagesResponse(BaseModel):
+    """Response model for inbox messages list."""
+
+    messages: List[InboxMessageResponse] = Field(description="List of inbox messages")
+    total: int = Field(description="Total number of messages returned")
+    receiver_id: str = Field(description="Terminal ID these messages belong to")

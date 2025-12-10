@@ -1,8 +1,7 @@
-"""HTTP-based agent communication server to replace MCP server functionality.
+"""HTTP-based agent communication server (MCP replacement).
 
-This module provides a standalone server that agents can use instead of the MCP server.
-It provides the same tools (handoff, assign, send_message) but uses HTTP requests
-to communicate with the FastAPI server.
+This module provides the same agent communication tools as tron-mcp-server
+but uses HTTP requests to communicate with the FastAPI server instead of MCP protocol.
 """
 
 import asyncio
@@ -12,157 +11,147 @@ import sys
 from typing import Any, Dict
 
 from cli_agent_manager.clients.agent_communication import (
-    assign as http_assign,
-    handoff as http_handoff,
-    send_message as http_send_message,
+    assign as async_assign,
+    handoff as async_handoff,
+    send_message as async_send_message,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class HTTPAgentServer:
-    """HTTP-based agent communication server."""
-
-    def __init__(self):
-        """Initialize the HTTP agent server."""
-        self.tools = {
-            "handoff": self._handoff_tool,
-            "assign": self._assign_tool,
-            "send_message": self._send_message_tool,
+def handoff(agent_profile: str, message: str, timeout: int = 600) -> Dict[str, Any]:
+    """Synchronous wrapper for handoff function.
+    
+    Args:
+        agent_profile: The agent profile to hand off to
+        message: The message/task to send to the target agent
+        timeout: Maximum time to wait for completion (1-3600 seconds)
+        
+    Returns:
+        Dict with success status, message, and agent output
+    """
+    try:
+        result = asyncio.run(async_handoff(agent_profile, message, timeout))
+        return {
+            "success": result.success,
+            "message": result.message,
+            "output": result.output,
+            "terminal_id": result.terminal_id,
+        }
+    except Exception as e:
+        logger.error(f"Handoff failed: {e}")
+        return {
+            "success": False,
+            "message": f"Handoff failed: {str(e)}",
+            "output": None,
+            "terminal_id": None,
         }
 
-    async def _handoff_tool(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle handoff tool calls."""
-        try:
-            agent_profile = params.get("agent_profile")
-            message = params.get("message")
-            timeout = params.get("timeout", 600)
 
-            if not agent_profile or not message:
-                return {
-                    "error": "Missing required parameters: agent_profile and message are required"
-                }
+def assign(agent_profile: str, message: str) -> Dict[str, Any]:
+    """Synchronous wrapper for assign function.
+    
+    Args:
+        agent_profile: Agent profile for the worker terminal
+        message: Task message (include callback instructions)
+        
+    Returns:
+        Dict with success status, worker terminal_id, and message
+    """
+    try:
+        return asyncio.run(async_assign(agent_profile, message))
+    except Exception as e:
+        logger.error(f"Assignment failed: {e}")
+        return {
+            "success": False,
+            "terminal_id": None,
+            "message": f"Assignment failed: {str(e)}",
+        }
 
-            result = await http_handoff(agent_profile, message, timeout)
-            
-            # Convert HandoffResult to dict for JSON serialization
-            return {
-                "success": result.success,
-                "message": result.message,
-                "output": result.output,
-                "terminal_id": result.terminal_id,
-            }
 
-        except Exception as e:
-            logger.error(f"Error in handoff tool: {e}")
-            return {
-                "success": False,
-                "message": f"Handoff failed: {str(e)}",
-                "output": None,
-                "terminal_id": None,
-            }
-
-    async def _assign_tool(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle assign tool calls."""
-        try:
-            agent_profile = params.get("agent_profile")
-            message = params.get("message")
-
-            if not agent_profile or not message:
-                return {
-                    "error": "Missing required parameters: agent_profile and message are required"
-                }
-
-            result = await http_assign(agent_profile, message)
-            return result
-
-        except Exception as e:
-            logger.error(f"Error in assign tool: {e}")
-            return {
-                "success": False,
-                "terminal_id": None,
-                "message": f"Assignment failed: {str(e)}",
-            }
-
-    async def _send_message_tool(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle send_message tool calls."""
-        try:
-            receiver_id = params.get("receiver_id")
-            message = params.get("message")
-
-            if not receiver_id or not message:
-                return {
-                    "error": "Missing required parameters: receiver_id and message are required"
-                }
-
-            result = await http_send_message(receiver_id, message)
-            return result
-
-        except Exception as e:
-            logger.error(f"Error in send_message tool: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
-
-    async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle a tool request."""
-        try:
-            tool_name = request.get("tool")
-            params = request.get("params", {})
-
-            if tool_name not in self.tools:
-                return {
-                    "error": f"Unknown tool: {tool_name}. Available tools: {list(self.tools.keys())}"
-                }
-
-            result = await self.tools[tool_name](params)
-            return result
-
-        except Exception as e:
-            logger.error(f"Error handling request: {e}")
-            return {"error": f"Request failed: {str(e)}"}
-
-    async def run_stdio(self):
-        """Run the server using stdio for MCP-compatible communication."""
-        logger.info("Starting HTTP-based agent communication server (stdio mode)")
+def send_message(receiver_id: str, message: str, sender_id: str = None) -> Dict[str, Any]:
+    """Synchronous wrapper for send_message function.
+    
+    Args:
+        receiver_id: Terminal ID of the receiver
+        message: Message content to send
+        
+    Returns:
+        Dict with success status and message details
+    """
+    try:
+        # If sender_id provided, set it in environment temporarily
+        import os
+        original_sender = os.environ.get("TRON_TERMINAL_ID")
+        if sender_id:
+            os.environ["TRON_TERMINAL_ID"] = sender_id
         
         try:
-            while True:
-                # Read request from stdin
-                line = await asyncio.get_event_loop().run_in_executor(
-                    None, sys.stdin.readline
-                )
-                
-                if not line:
-                    break
-                
-                try:
-                    request = json.loads(line.strip())
-                    response = await self.handle_request(request)
-                    
-                    # Write response to stdout
-                    print(json.dumps(response), flush=True)
-                    
-                except json.JSONDecodeError as e:
-                    error_response = {"error": f"Invalid JSON: {str(e)}"}
-                    print(json.dumps(error_response), flush=True)
-                    
-        except KeyboardInterrupt:
-            logger.info("Server stopped by user")
-        except Exception as e:
-            logger.error(f"Server error: {e}")
+            return asyncio.run(async_send_message(receiver_id, message))
+        finally:
+            # Restore original environment
+            if original_sender:
+                os.environ["TRON_TERMINAL_ID"] = original_sender
+            elif sender_id and "TRON_TERMINAL_ID" in os.environ:
+                del os.environ["TRON_TERMINAL_ID"]
+    except Exception as e:
+        logger.error(f"Send message failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+        }
 
 
 async def main():
-    """Main entry point for the HTTP agent server."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    """Main entry point for the HTTP-based agent communication server.
     
-    server = HTTPAgentServer()
-    await server.run_stdio()
+    This provides an MCP-compatible interface using HTTP requests instead of MCP protocol.
+    """
+    print("HTTP-based agent communication server started", file=sys.stderr)
+    print("Available tools: handoff, assign, send_message", file=sys.stderr)
+    
+    # Simple stdio-based interface for MCP compatibility
+    try:
+        while True:
+            line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+            if not line:
+                break
+                
+            try:
+                request = json.loads(line.strip())
+                method = request.get("method")
+                params = request.get("params", {})
+                
+                if method == "handoff":
+                    result = handoff(**params)
+                elif method == "assign":
+                    result = assign(**params)
+                elif method == "send_message":
+                    result = send_message(**params)
+                else:
+                    result = {"error": f"Unknown method: {method}"}
+                
+                response = {
+                    "id": request.get("id"),
+                    "result": result
+                }
+                print(json.dumps(response), flush=True)
+                
+            except json.JSONDecodeError:
+                error_response = {
+                    "error": "Invalid JSON request"
+                }
+                print(json.dumps(error_response), flush=True)
+            except Exception as e:
+                error_response = {
+                    "error": f"Request failed: {str(e)}"
+                }
+                print(json.dumps(error_response), flush=True)
+                
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("HTTP-based agent communication server stopped", file=sys.stderr)
 
 
 if __name__ == "__main__":

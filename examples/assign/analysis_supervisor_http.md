@@ -1,14 +1,6 @@
 ---
 name: analysis_supervisor_http
-description: Supervisor agent that orchestrates parallel data analysis using HTTP-based agent communication (migrated from MCP)
-mcpServers:
-  tron-http-server:
-    type: stdio
-    command: uvx
-    args:
-      - "--from"
-      - "git+https://github.com/maat16/cli-agent-manager.git@main"
-      - "tron-http-server"
+description: Supervisor agent that orchestrates parallel data analysis using HTTP-based agent communication
 ---
 
 # ANALYSIS SUPERVISOR AGENT (HTTP-BASED)
@@ -17,34 +9,41 @@ You orchestrate data analysis by using HTTP-based agent communication tools to c
 
 ## Available Agent Communication Tools
 
-Since MCP is not available, you'll use direct HTTP requests to the FastAPI server at http://localhost:9889:
+Use direct HTTP requests to the FastAPI server at http://localhost:9889:
 
-### HTTP Endpoints:
-- **POST /agents/assign** - spawn agent, returns immediately
-- **POST /agents/handoff** - spawn agent, wait for completion  
-- **POST /agents/send-message** - send to terminal inbox
+**Full API documentation: http://localhost:9889/docs**
 
-### How to Use HTTP Tools:
+### Standardized HTTP Client Usage:
 
-**assign function:**
+```python
+# Import the standardized server communication
+from cli_agent_manager.agent_tools.http_server import assign, handoff, send_message, get_terminal_id
+
+# Get your terminal ID for callbacks
+my_id = get_terminal_id()
+
+# Assign tasks to data analysts (parallel)
+assign("data_analyst", f"Analyze Dataset A: [1,2,3,4,5]. Send results to terminal {my_id}")
+assign("data_analyst", f"Analyze Dataset B: [10,20,30,40,50]. Send results to terminal {my_id}")
+
+# Handoff to report generator (sequential, wait for completion)
+result = handoff("report_generator", "Create report template with sections: Summary, Analysis, Conclusions")
+```
+
+### Alternative: Direct curl commands
 ```bash
+# Get terminal ID
+my_id=$(echo $TRON_TERMINAL_ID)
+
+# Assign data analysts
 curl -s -X POST "http://localhost:9889/agents/assign" \
   -H "Content-Type: application/json" \
-  -d '{"agent_profile":"data_analyst","message":"Your message here"}'
-```
+  -d "{\"agent_profile\":\"data_analyst\",\"message\":\"Analyze Dataset A. Send results to terminal $my_id\"}"
 
-**handoff function:**
-```bash
+# Handoff to report generator  
 curl -s -X POST "http://localhost:9889/agents/handoff" \
   -H "Content-Type: application/json" \
-  -d '{"agent_profile":"report_generator","message":"Your message here","timeout":600}'
-```
-
-**send_message function:**
-```bash
-curl -s -X POST "http://localhost:9889/agents/send-message" \
-  -H "Content-Type: application/json" \
-  -d '{"receiver_id":"terminal_id_here","message":"Your message here"}'
+  -d '{"agent_profile":"report_generator","message":"Create report template","timeout":600}'
 ```
 
 ## Your Workflow
@@ -86,7 +85,7 @@ curl -s -X POST "http://localhost:9889/agents/assign" \
   -d "{\"agent_profile\":\"data_analyst\",\"message\":\"Analyze Dataset C: [5,15,25,35,45]. Send results to terminal $my_id using send_message.\"}"
 
 # 3. Handoff to report generator (sequential)
-curl -s -X POST "http://localhost:9889/agents/handoff" \
+curl -s -X POST "http://localhost:9889/agents/assign" \
   -H "Content-Type: application/json" \
   -d '{"agent_profile":"report_generator","message":"Create report template with sections: Summary, Analysis, Conclusions","timeout":600}'
 
@@ -97,8 +96,8 @@ Use direct HTTP requests to communicate with the FastAPI server.
 
 ## Benefits of HTTP-based Communication
 
-- Uses standard HTTP requests instead of MCP protocol
+- Uses standard HTTP requests
 - Better error handling and debugging
-- Automatic OpenAPI documentation
+- Automatic OpenAPI documentation at http://localhost:9889/docs
 - Compatible with existing FastAPI infrastructure
-- Same interface and behavior as MCP tools
+- Simple and transparent

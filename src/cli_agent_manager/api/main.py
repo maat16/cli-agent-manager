@@ -19,10 +19,11 @@ from cli_agent_manager.api.models import (
     AssignResponse,
     HandoffRequest,
     HandoffResponse,
+    InboxMessagesResponse,
     SendMessageRequest,
     SendMessageResponse,
 )
-from cli_agent_manager.clients.database import create_inbox_message, init_db
+from cli_agent_manager.clients.database import create_inbox_message, get_inbox_messages, init_db
 from cli_agent_manager.constants import (
     API_BASE_URL,
     DEFAULT_PROVIDER,
@@ -32,6 +33,7 @@ from cli_agent_manager.constants import (
     SERVER_VERSION,
     TERMINAL_LOG_DIR,
 )
+from cli_agent_manager.models.inbox import MessageStatus
 from cli_agent_manager.models.terminal import Terminal, TerminalId, TerminalStatus
 from cli_agent_manager.providers.manager import provider_manager
 from cli_agent_manager.services import (
@@ -363,6 +365,24 @@ def _send_to_inbox(receiver_id: str, message: str) -> Dict[str, Any]:
     return response.json()
 
 
+@app.get("/", tags=["Health"])
+async def root():
+    """Root endpoint with basic API information."""
+    return {
+        "service": "CLI Agent Orchestrator",
+        "version": SERVER_VERSION,
+        "status": "running",
+        "docs": "/docs",
+        "health": "/health",
+        "endpoints": {
+            "agent_communication": ["/agents/handoff", "/agents/assign", "/agents/send-message"],
+            "terminals": ["/terminals", "/terminals/{id}", "/terminals/{id}/output"],
+            "sessions": ["/sessions", "/sessions/{name}"],
+            "inbox": ["/inbox/{terminal_id}", "/terminals/{id}/inbox/messages"]
+        }
+    }
+
+
 @app.get("/health", tags=["Health"])
 async def health_check():
     """Basic health check endpoint."""
@@ -422,6 +442,55 @@ async def detailed_health_check():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Health check failed: {str(e)}"
+        )
+
+
+@app.get("/terminals", tags=["Terminals"])
+async def list_all_terminals() -> List[Dict]:
+    """List all terminals across all sessions."""
+    try:
+        from cli_agent_manager.clients.database import list_all_terminals
+        return list_all_terminals()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list terminals: {str(e)}",
+        )
+
+
+@app.get("/agents/status", tags=["Agent Communication"])
+async def get_agents_status() -> Dict[str, Any]:
+    """Get status of all active agents and terminals."""
+    try:
+        from cli_agent_manager.clients.database import list_all_terminals
+        terminals = list_all_terminals()
+        
+        # Group by session and get status
+        sessions = {}
+        for terminal in terminals:
+            session_name = terminal.get("tmux_session", "unknown")
+            if session_name not in sessions:
+                sessions[session_name] = []
+            
+            # Get terminal status
+            try:
+                from cli_agent_manager.services.terminal_service import get_terminal
+                terminal_info = get_terminal(terminal["id"])
+                terminal["status"] = terminal_info.status.value
+            except Exception:
+                terminal["status"] = "unknown"
+                
+            sessions[session_name].append(terminal)
+        
+        return {
+            "total_terminals": len(terminals),
+            "sessions": sessions,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get agents status: {str(e)}",
         )
 
 
@@ -643,7 +712,22 @@ async def send_message_to_agent(request: SendMessageRequest) -> SendMessageRespo
     - Receiver terminal must exist
     """
     try:
-        result = _send_to_inbox(request.receiver_id, request.message)
+        # Use sender_id from request if provided, otherwise try environment, otherwise use default
+        sender_id = request.sender_id or os.getenv("TRON_TERMINAL_ID")
+        if not sender_id:
+            # Use a default sender_id for agents that don't have TRON_TERMINAL_ID set
+            sender_id = "unknown"
+        
+        # Create message directly instead of using _send_to_inbox
+        inbox_msg = create_inbox_message(sender_id, request.receiver_id, request.message)
+        inbox_service.check_and_send_pending_messages(request.receiver_id)
+        
+        result = {
+            "message_id": inbox_msg.id,
+            "sender_id": inbox_msg.sender_id,
+            "receiver_id": inbox_msg.receiver_id,
+            "created_at": inbox_msg.created_at.isoformat(),
+        }
         
         return SendMessageResponse(
             success=True,
@@ -980,6 +1064,184 @@ async def delete_terminal(terminal_id: TerminalId) -> Dict:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete terminal: {str(e)}",
         )
+
+
+@app.get("/terminals/{terminal_id}/inbox/messages", response_model=InboxMessagesResponse, tags=["Terminals"])
+async def get_inbox_messages_endpoint(
+    terminal_id: TerminalId,
+    status: Optional[str] = None,
+    limit: int = 10
+) -> InboxMessagesResponse:
+    """Get inbox messages for a terminal with optional status filter and pagination.
+    
+    This endpoint allows reading from a terminal's inbox, which is the message queue
+    that powers terminal-to-terminal communication. Messages can be filtered by status
+    and paginated for efficient retrieval.
+    
+    Args:
+        terminal_id: Terminal ID to get messages for
+        status: Optional status filter (pending, delivered, failed)
+        limit: Maximum number of messages to return (default 10, max 100)
+        
+    Returns:
+        List of inbox messages with metadata
+        
+    Example:
+        GET /terminals/abc123/inbox/messages?status=pending&limit=5
+    """
+    try:
+        # Validate status parameter if provided
+        message_status = None
+        if status and status.lower() != "all":
+            try:
+                message_status = MessageStatus(status.lower())
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid status '{status}'. Must be one of: pending, delivered, failed, all"
+                )
+        
+        # Validate and clamp limit
+        limit = min(max(1, limit), 100)
+        
+        # Get messages from database
+        messages = get_inbox_messages(terminal_id, message_status, limit)
+        
+        # Convert to response format
+        message_responses = [
+            {
+                "id": msg.id,
+                "sender_id": msg.sender_id,
+                "receiver_id": msg.receiver_id,
+                "message": msg.message,
+                "status": msg.status.value,
+                "created_at": msg.created_at.isoformat(),
+            }
+            for msg in messages
+        ]
+        
+        return InboxMessagesResponse(
+            messages=message_responses,
+            total=len(message_responses),
+            receiver_id=terminal_id
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get inbox messages: {str(e)}",
+        )
+
+
+@app.get("/inbox/{terminal_id}", response_model=InboxMessagesResponse, tags=["Terminals"])
+async def get_inbox_messages_shorthand(
+    terminal_id: TerminalId,
+    status: Optional[str] = None,
+    limit: int = 10
+) -> InboxMessagesResponse:
+    """Shorthand endpoint for getting inbox messages.
+    
+    This is a convenience endpoint that provides the same functionality as
+    GET /terminals/{terminal_id}/inbox/messages but with a shorter URL.
+    
+    Args:
+        terminal_id: Terminal ID to get messages for
+        status: Optional status filter (pending, delivered, failed)
+        limit: Maximum number of messages to return (default 10, max 100)
+        
+    Returns:
+        List of inbox messages with metadata
+        
+    Example:
+        GET /inbox/abc123?status=pending&limit=5
+    """
+    # Delegate to the main inbox endpoint
+    return await get_inbox_messages_endpoint(terminal_id, status, limit)
+
+
+@app.get("/messages/{terminal_id}", response_model=InboxMessagesResponse, tags=["Terminals"])
+async def get_messages_alias(
+    terminal_id: TerminalId,
+    status: Optional[str] = None,
+    limit: int = 10
+) -> InboxMessagesResponse:
+    """Alias endpoint for getting messages (same as inbox).
+    
+    This provides compatibility for agents expecting /messages/{terminal_id} endpoint.
+    
+    Args:
+        terminal_id: Terminal ID to get messages for
+        status: Optional status filter (pending, delivered, failed)
+        limit: Maximum number of messages to return (default 10, max 100)
+        
+    Returns:
+        List of inbox messages with metadata
+    """
+    # Delegate to the main inbox endpoint
+    return await get_inbox_messages_endpoint(terminal_id, status, limit)
+
+
+@app.get("/messages", tags=["Terminals"])
+async def get_all_messages() -> Dict[str, Any]:
+    """Get all messages across all terminals (for debugging)."""
+    try:
+        from cli_agent_manager.clients.database import SessionLocal, InboxModel
+        with SessionLocal() as db:
+            messages = db.query(InboxModel).all()
+            
+            # Group by receiver
+            by_receiver = {}
+            for msg in messages:
+                if msg.receiver_id not in by_receiver:
+                    by_receiver[msg.receiver_id] = []
+                by_receiver[msg.receiver_id].append({
+                    "id": msg.id,
+                    "sender_id": msg.sender_id,
+                    "message": msg.message[:100] + "..." if len(msg.message) > 100 else msg.message,
+                    "status": msg.status,
+                    "created_at": msg.created_at.isoformat(),
+                })
+            
+            return {
+                "total_messages": len(messages),
+                "by_receiver": by_receiver,
+                "timestamp": time.time()
+            }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get messages: {str(e)}",
+        )
+
+
+@app.get("/terminals/{terminal_id}/messages", response_model=InboxMessagesResponse, tags=["Terminals"])
+async def get_terminal_messages_alias(
+    terminal_id: TerminalId,
+    status: Optional[str] = None,
+    limit: int = 10
+) -> InboxMessagesResponse:
+    """Alias endpoint for getting terminal messages (same as inbox).
+    
+    This provides compatibility for agents expecting /terminals/{terminal_id}/messages endpoint.
+    """
+    # Delegate to the main inbox endpoint
+    return await get_inbox_messages_endpoint(terminal_id, status, limit)
+
+
+@app.get("/terminals/{terminal_id}/inbox", response_model=InboxMessagesResponse, tags=["Terminals"])
+async def get_terminal_inbox_alias(
+    terminal_id: TerminalId,
+    status: Optional[str] = None,
+    limit: int = 10
+) -> InboxMessagesResponse:
+    """Alias endpoint for getting terminal inbox (same as inbox).
+    
+    This provides compatibility for agents expecting /terminals/{terminal_id}/inbox endpoint.
+    """
+    # Delegate to the main inbox endpoint
+    return await get_inbox_messages_endpoint(terminal_id, status, limit)
 
 
 @app.post("/terminals/{receiver_id}/inbox/messages", tags=["Terminals"])

@@ -1,14 +1,6 @@
 ---
 name: report_generator
-description: Agent that creates report templates and structures
-mcpServers:
-  tron-http-server:
-    type: stdio
-    command: uvx
-    args:
-      - "--from"
-      - "git+https://github.com/maat16/cli-agent-manager.git@main"
-      - "tron-http-server"
+description: Agent that creates report templates and structures using HTTP requests
 ---
 
 # REPORT GENERATOR AGENT

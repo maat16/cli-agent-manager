@@ -434,7 +434,7 @@ tron launch --agents analysis_supervisor_http
 
 ## Special Thanks
 
-Special thanks to [AWS Labs CLI Agent Orchestrator](https://github.com/maat16/cli-agent-manager), which this project is based upon. The original project pioneered the use of MCP (Model Context Protocol) for communication between AI agents, providing the foundational architecture and concepts that enabled this HTTP-based implementation.
+Special thanks to [AWS Labs CLI Agent Orchestrator](https://github.com/awslabs/cli-agent-orchestrator), which this project is based upon. The original project pioneered the use of MCP (Model Context Protocol) for communication between AI agents, providing the foundational architecture and concepts that enabled this HTTP-based implementation.
 
 ## Security
 

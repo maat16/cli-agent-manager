@@ -165,9 +165,14 @@ class AgentCommunicationClient:
             Dict with success status and message details
         """
         try:
+            # Get sender ID from environment
+            import os
+            sender_id = os.getenv("TRON_TERMINAL_ID")
+            
             request = SendMessageRequest(
                 receiver_id=receiver_id,
-                message=message
+                message=message,
+                sender_id=sender_id  # Will be None if not set, endpoint will handle it
             )
 
             async with httpx.AsyncClient(timeout=self.timeout) as client:
